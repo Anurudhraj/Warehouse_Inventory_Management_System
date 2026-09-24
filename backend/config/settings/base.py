@@ -194,13 +194,35 @@ AUTH_PASSWORD_VALIDATORS = [
 ]
 
 SESSION_COOKIE_HTTPONLY = True
-SESSION_COOKIE_SAMESITE = "Lax"
-CSRF_COOKIE_HTTPONLY = True
-CSRF_COOKIE_SAMESITE = "Lax"
+CSRF_COOKIE_HTTPONLY = False
 SESSION_ENGINE = "django.contrib.sessions.backends.db"
 SESSION_COOKIE_AGE = env.env_int("SESSION_COOKIE_AGE", default=8 * 60 * 60)  # 8 hours
 SESSION_SAVE_EVERY_REQUEST = False
 SESSION_EXPIRE_AT_BROWSER_CLOSE = False
+
+# ``CSRF_COOKIE_HTTPONLY`` must stay false: the SPA reads the token in order to
+# echo it back in ``X-CSRFToken`` (Django's double-submit check). The CSRF token
+# is not a session credential — an attacker who can read it still cannot forge
+# the session — so keeping it script-readable is the standard Django + SPA
+# arrangement. The session cookie stays HttpOnly and is the only credential.
+
+# Cookie attributes are configurable because the *shape* of the deployment
+# differs: a same-site deployment (nginx edge, ``Lax``) is not the same as a
+# cross-site embed of the client (e.g. a preview pane served from another
+# registrable domain), where ``SameSite=Lax`` cookies are simply never sent on
+# the API's XHR calls. Production pins these values hard (see production.py);
+# development leaves them to the environment.
+_SAMESITE = env.env_str("DJANGO_COOKIE_SAMESITE", default="Lax")
+_COOKIE_SECURE = env.env_bool("DJANGO_COOKIE_SECURE", default=False)
+if _SAMESITE.lower() == "none" and not _COOKIE_SECURE:
+    # Browsers reject ``SameSite=None`` without ``Secure`` — fail loudly rather
+    # than silently dropping the cookie in the client.
+    _COOKIE_SECURE = True
+
+SESSION_COOKIE_SAMESITE = _SAMESITE
+SESSION_COOKIE_SECURE = _COOKIE_SECURE
+CSRF_COOKIE_SAMESITE = _SAMESITE
+CSRF_COOKIE_SECURE = _COOKIE_SECURE
 
 # ---------------------------------------------------------------------------
 # Authentication hardening (identity + security modules)
@@ -234,6 +256,14 @@ AUTH_MFA_RECOVERY_CODE_COUNT = env.env_int("AUTH_MFA_RECOVERY_CODE_COUNT", defau
 # Tracked sessions: idle timeout used by the session management endpoints.
 SESSION_IDLE_TIMEOUT = env.env_int("SESSION_IDLE_TIMEOUT", default=8 * 60 * 60)
 
+# Bearer fallback for the SPA. When enabled, a successful sign-in also returns
+# the (opaque, server-tracked) session token so the client can authenticate with
+# ``Authorization: Bearer``. It exists for cross-site/embedded deployments where
+# the browser refuses to send or store third-party cookies — the cookie path
+# remains primary and is always tried first. Off by default: a browser-managed,
+# HttpOnly cookie is the stronger credential whenever it can be used.
+AUTH_ENABLE_TOKEN_FALLBACK = env.env_bool("AUTH_ENABLE_TOKEN_FALLBACK", default=False)
+
 # ---------------------------------------------------------------------------
 # Email (password reset, email verification, notifications)
 # ---------------------------------------------------------------------------
@@ -256,7 +286,11 @@ FRONTEND_BASE_URL = env.env_str("FRONTEND_BASE_URL", default="http://localhost:5
 # ---------------------------------------------------------------------------
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": [
+        # Order matters: the session cookie is tried first and wins when the
+        # browser has one; the bearer fallback only authenticates requests that
+        # arrive without a usable cookie.
         "apps.identity.authentication.SessionAuthenticationWithChallenge",
+        "apps.identity.authentication.SessionTokenAuthentication",
     ],
     "DEFAULT_PERMISSION_CLASSES": [
         "rest_framework.permissions.AllowAny",  # tightened in Part 2 (identity module)

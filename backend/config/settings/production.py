@@ -32,6 +32,9 @@ SESSION_COOKIE_SECURE = True
 CSRF_COOKIE_SECURE = True
 SESSION_COOKIE_SAMESITE = "Lax"
 CSRF_COOKIE_SAMESITE = "Lax"
+# The bearer fallback is a development/preview accommodation for embedded
+# clients; a same-origin production deployment uses the HttpOnly session cookie.
+AUTH_ENABLE_TOKEN_FALLBACK = False
 SESSION_COOKIE_NAME = "__Host-sessionid"
 CSRF_COOKIE_NAME = "__Host-csrftoken"
 

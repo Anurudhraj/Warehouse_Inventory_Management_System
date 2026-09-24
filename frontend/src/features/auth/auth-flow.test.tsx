@@ -62,11 +62,23 @@ function renderAt(path: string) {
 
 let authenticated: boolean;
 let permissions: string[];
+/** Simulates a browser that will not store/send the session cookie (embed). */
+let cookieSessionWorks: boolean;
+/** Whether the server offers the bearer fallback at all. */
+let serverOffersToken: boolean;
+let issuedToken: string | null;
+const TOKEN = 'opaque-session-token';
+let lastLoginBody: Record<string, unknown> | null;
 
 beforeEach(() => {
   authenticated = false;
   permissions = ['warehouse.view'];
+  cookieSessionWorks = true;
+  serverOffersToken = true;
+  issuedToken = null;
+  lastLoginBody = null;
   localStorage.clear();
+  sessionStorage.clear();
 
   vi.stubGlobal(
     'fetch',
@@ -74,16 +86,27 @@ beforeEach(() => {
       const url = typeof input === 'string' ? input : input.toString();
 
       if (url.includes('/identity/auth/session/')) {
-        return authenticated
+        const headers = new Headers(init?.headers ?? {});
+        const cookieAccepted = authenticated && cookieSessionWorks;
+        const tokenAccepted =
+          Boolean(issuedToken) && headers.get('Authorization') === `Bearer ${issuedToken}`;
+        return cookieAccepted || tokenAccepted
           ? jsonResponse(sessionResponse(permissions))
           : jsonResponse({ error: { code: 'not_authenticated', message: 'no session' } }, 401);
       }
 
       if (url.includes('/identity/auth/login/')) {
         const body = JSON.parse(String(init?.body ?? '{}'));
+        lastLoginBody = body;
         if (body.password === 'correct-horse-battery') {
           authenticated = true;
-          return jsonResponse({ mfa_required: false, user: baseUser, permissions });
+          issuedToken = body.token_auth && serverOffersToken ? TOKEN : null;
+          return jsonResponse({
+            mfa_required: false,
+            user: baseUser,
+            permissions,
+            session_token: issuedToken,
+          });
         }
         return jsonResponse(
           { error: { code: 'authentication_failed', message: 'Invalid email or password.' } },
@@ -195,6 +218,65 @@ describe('permission-gated navigation', () => {
       await screen.findByRole('heading', { name: /do not have access to this area/i }),
     ).toBeVisible();
     expect(screen.getByText(/user.view/i)).toBeVisible();
+  });
+
+  it('asks the API for the token fallback instead of relying on cookies alone', async () => {
+    const user = userEvent.setup();
+    renderAt('/login');
+
+    await user.type(await screen.findByLabelText(/email address/i), 'operator@acme.test');
+    await user.type(screen.getByLabelText(/^password$/i), 'correct-horse-battery');
+    await user.click(screen.getByRole('button', { name: /sign in/i }));
+
+    await screen.findByRole('heading', { name: /warehouse control tower/i });
+    expect(lastLoginBody).toMatchObject({ token_auth: true });
+  });
+
+  it('stays signed in via the bearer fallback when the browser drops the cookie', async () => {
+    cookieSessionWorks = false; // cross-site embed: cookies never arrive
+    const user = userEvent.setup();
+    renderAt('/login');
+
+    await user.type(await screen.findByLabelText(/email address/i), 'operator@acme.test');
+    await user.type(screen.getByLabelText(/^password$/i), 'correct-horse-battery');
+    await user.click(screen.getByRole('button', { name: /sign in/i }));
+
+    // The session request only succeeds because the client sent the token.
+    await waitFor(() =>
+      expect(screen.getByRole('heading', { name: /warehouse control tower/i })).toBeVisible(),
+    );
+    expect(sessionStorage.getItem('wims.session_token')).toBe('opaque-session-token');
+  });
+
+  it('explains a blocked cookie instead of silently returning to sign-in', async () => {
+    cookieSessionWorks = false;
+    serverOffersToken = false; // no fallback available on this server
+    const user = userEvent.setup();
+    renderAt('/login');
+
+    await user.type(await screen.findByLabelText(/email address/i), 'operator@acme.test');
+    await user.type(screen.getByLabelText(/^password$/i), 'correct-horse-battery');
+    await user.click(screen.getByRole('button', { name: /sign in/i }));
+
+    expect(
+      await screen.findByText(/browser refused to keep the sign-in cookie/i),
+    ).toBeVisible();
+    expect(sessionStorage.getItem('wims.session_token')).toBeNull();
+  });
+
+  it('forgets the session token on sign-out', async () => {
+    const user = userEvent.setup();
+    renderAt('/login');
+    await user.type(await screen.findByLabelText(/email address/i), 'operator@acme.test');
+    await user.type(screen.getByLabelText(/^password$/i), 'correct-horse-battery');
+    await user.click(screen.getByRole('button', { name: /sign in/i }));
+    await screen.findByRole('heading', { name: /warehouse control tower/i });
+    expect(sessionStorage.getItem('wims.session_token')).toBe('opaque-session-token');
+
+    await user.click(screen.getByRole('button', { name: /account menu/i }));
+    await user.click(await screen.findByRole('menuitem', { name: /sign out/i }));
+
+    await waitFor(() => expect(sessionStorage.getItem('wims.session_token')).toBeNull());
   });
 
   it('loads the users screen for an administrator', async () => {

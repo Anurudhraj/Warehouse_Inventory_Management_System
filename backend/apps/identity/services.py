@@ -382,11 +382,30 @@ class AuthenticationService:
 
     def logout(self) -> None:
         session_key = self.request.session.session_key
+        if not session_key:
+            # Bearer-authenticated call: there is no cookie session, so revoke
+            # the tracked session that carried the token.
+            authenticated = getattr(self.request, "auth", None)
+            if isinstance(authenticated, UserSession):
+                session_key = authenticated.session_key
         if session_key:
             UserSession.objects.filter(session_key=session_key, revoked_at__isnull=True).update(
                 revoked_at=timezone.now(), revoked_reason="logout"
             )
         django_logout(self.request)
+
+
+def session_token_for(request) -> str | None:
+    """Opaque session token for the bearer fallback, when it is enabled.
+
+    Returns the tracked session key that was just issued: a random 32+ character
+    value already validated against ``UserSession`` on every request. Disabled by
+    default (``AUTH_ENABLE_TOKEN_FALLBACK``) because a browser-managed, HttpOnly
+    cookie is the stronger credential when the browser will actually use it.
+    """
+    if not settings.AUTH_ENABLE_TOKEN_FALLBACK:
+        return None
+    return request.session.session_key
 
 
 # ---------------------------------------------------------------------------

@@ -23,6 +23,35 @@ export interface RequestOptions extends Omit<RequestInit, 'body'> {
 const CSRF_COOKIE_NAMES = ['csrftoken', '__Host-csrftoken'];
 const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS', 'TRACE']);
 
+/**
+ * Bearer fallback for the (opt-in) session-token path.
+ *
+ * The HttpOnly session cookie stays the primary credential; this exists for
+ * deployments where the browser will not store or send it — most importantly a
+ * cross-site embedded preview, where ``SameSite=Lax`` cookies are dropped on
+ * XHR. The token is the same server-tracked session credential, so revocation
+ * and expiry behave identically; it lives in ``sessionStorage`` (cleared when
+ * the tab closes, never shared across tabs) and is only ever sent to the API.
+ */
+const TOKEN_STORAGE_KEY = 'wims.session_token';
+
+export function getSessionToken(): string | null {
+  try {
+    return window.sessionStorage.getItem(TOKEN_STORAGE_KEY);
+  } catch {
+    return null;
+  }
+}
+
+export function setSessionToken(token: string | null | undefined): void {
+  try {
+    if (token) window.sessionStorage.setItem(TOKEN_STORAGE_KEY, token);
+    else window.sessionStorage.removeItem(TOKEN_STORAGE_KEY);
+  } catch {
+    /* storage unavailable (private mode) — cookie auth still applies */
+  }
+}
+
 function readCookie(name: string): string | null {
   if (typeof document === 'undefined') return null;
   const match = document.cookie.split('; ').find((row) => row.startsWith(`${name}=`));
@@ -100,6 +129,8 @@ export async function apiRequest<TResponse>(
   if (body !== undefined && !requestHeaders.has('Content-Type')) {
     requestHeaders.set('Content-Type', 'application/json');
   }
+  const sessionToken = getSessionToken();
+  if (sessionToken) requestHeaders.set('Authorization', `Bearer ${sessionToken}`);
   if (!SAFE_METHODS.has(method)) {
     const csrfToken = getCsrfToken();
     if (csrfToken) requestHeaders.set('X-CSRFToken', csrfToken);
@@ -115,7 +146,15 @@ export async function apiRequest<TResponse>(
       body: body === undefined ? undefined : JSON.stringify(body),
     });
 
-    if (!response.ok) throw await parseError(response);
+    if (!response.ok) {
+      const failure = await parseError(response);
+      if (failure.status === 401 && sessionToken) {
+        // The stored token is dead (revoked/expired session): drop it so the
+        // app falls back to "signed out" instead of retrying with it forever.
+        setSessionToken(null);
+      }
+      throw failure;
+    }
     if (response.status === 204) return undefined as TResponse;
 
     const contentType = response.headers.get('Content-Type') ?? '';

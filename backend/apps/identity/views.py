@@ -50,6 +50,7 @@ from apps.identity.services import (
     PasswordService,
     SessionService,
     UserService,
+    session_token_for,
 )
 from apps.security.authorization import AuthorizationService, authorization_for
 from apps.security.permissions import (
@@ -59,6 +60,19 @@ from apps.security.permissions import (
 )
 
 logger = logging.getLogger("apps.identity.api")
+
+
+def _add_session_token(payload: dict, request, *, requested: bool) -> None:
+    """Attach the bearer-fallback token to a sign-in response, when available.
+
+    The field is omitted entirely unless the client asked *and* the server has
+    the fallback enabled, so the API contract is unchanged for cookie clients.
+    """
+    if not requested:
+        return
+    token = session_token_for(request)
+    if token:
+        payload["session_token"] = token
 
 
 # ---------------------------------------------------------------------------
@@ -74,7 +88,9 @@ class LoginView(ChallengeHeaderMixin, APIView):
     def post(self, request):
         serializer = LoginSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        outcome = AuthenticationService(request).login(**serializer.validated_data)
+        data = dict(serializer.validated_data)
+        wants_token = data.pop("token_auth", False)
+        outcome = AuthenticationService(request).login(**data)
 
         if outcome.mfa_required:
             return Response(
@@ -86,16 +102,13 @@ class LoginView(ChallengeHeaderMixin, APIView):
                 status=status.HTTP_200_OK,
             )
 
-        return Response(
-            {
-                "mfa_required": False,
-                "user": ProfileSerializer(outcome.user, context={"request": request}).data,
-                "permissions": sorted(
-                    AuthorizationService(outcome.user).effective_permission_codes()
-                ),
-            },
-            status=status.HTTP_200_OK,
-        )
+        payload = {
+            "mfa_required": False,
+            "user": ProfileSerializer(outcome.user, context={"request": request}).data,
+            "permissions": sorted(AuthorizationService(outcome.user).effective_permission_codes()),
+        }
+        _add_session_token(payload, request, requested=wants_token)
+        return Response(payload, status=status.HTTP_200_OK)
 
 
 class MFALoginVerifyView(ChallengeHeaderMixin, APIView):
@@ -108,19 +121,18 @@ class MFALoginVerifyView(ChallengeHeaderMixin, APIView):
     def post(self, request):
         serializer = MFAChallengeSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
+        wants_token = bool(serializer.validated_data.get("token_auth"))
         outcome = AuthenticationService(request).verify_mfa_challenge(
             challenge_token=serializer.validated_data["challenge_token"],
             code=serializer.validated_data["code"],
         )
-        return Response(
-            {
-                "mfa_required": False,
-                "user": ProfileSerializer(outcome.user, context={"request": request}).data,
-                "permissions": sorted(
-                    AuthorizationService(outcome.user).effective_permission_codes()
-                ),
-            }
-        )
+        payload = {
+            "mfa_required": False,
+            "user": ProfileSerializer(outcome.user, context={"request": request}).data,
+            "permissions": sorted(AuthorizationService(outcome.user).effective_permission_codes()),
+        }
+        _add_session_token(payload, request, requested=wants_token)
+        return Response(payload)
 
 
 class LogoutView(ChallengeHeaderMixin, APIView):

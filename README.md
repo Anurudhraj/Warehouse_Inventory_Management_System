@@ -202,6 +202,48 @@ make dev-services                 # prints the connection URLs, keeps running
 # or: .venv/bin/python scripts/dev_services.py
 ```
 
+**One-shot bootstrap (services + data + embedded-preview settings)**
+
+```bash
+.venv/bin/python scripts/dev_sandbox.py            # keeps PostgreSQL/Redis running
+# then, in two more terminals:
+#   cd backend  && python manage.py runserver 0.0.0.0:8000
+#   cd frontend && npx vite --host 0.0.0.0
+```
+
+It writes `backend/.env`, migrates, syncs the RBAC registry and seeds a demo
+organization with role-scoped users, so a fresh database is immediately usable:
+
+| Account                 | Role                  | Scope                       | Password                    |
+| ----------------------- | --------------------- | --------------------------- | --------------------------- |
+| `dev-admin@wims.local`  | Platform administrator | platform                    | `Dev-Only-Passw0rd-2026!`   |
+| `manager@wims.local`    | Warehouse Manager     | ACME (all warehouses)       | `Wims-Demo-Password-2026!`  |
+| `controller@wims.local` | Inventory Controller  | Bhopal Main Warehouse       | `Wims-Demo-Password-2026!`  |
+| `operator@wims.local`   | Warehouse Operator    | Bhopal Main Warehouse       | `Wims-Demo-Password-2026!`  |
+| `viewer@wims.local`     | Management Viewer     | ACME (all warehouses)       | `Wims-Demo-Password-2026!`  |
+
+> Development credentials only — they exist in a local database, never in a
+> deployment. `manage.py seed_demo_data` re-creates them idempotently and
+> refuses to run with production settings.
+
+### When the browser preview cannot sign in
+
+Sign-in needs the browser to keep a session credential. Two situations break it,
+both handled by the bootstrap above:
+
+* **Cookies are dropped** (the client is embedded on another registrable domain,
+  where `SameSite=Lax` cookies are never sent on API calls) — `dev_sandbox.py`
+  writes `DJANGO_COOKIE_SAMESITE=None`, `DJANGO_COOKIE_SECURE=true` and
+  `AUTH_ENABLE_TOKEN_FALLBACK=true`, so the client can fall back to an
+  `Authorization: Bearer` session token.
+* **Third-party cookies are blocked outright** (Safari, hardened Chrome) — the
+  bearer fallback is what keeps the preview working; opening the preview in its
+  own tab always restores plain cookie authentication.
+
+Production keeps the stricter posture: `SameSite=Lax`, `Secure`, `__Host-`
+cookie names and the bearer fallback disabled (see
+[docs/rbac.md](docs/rbac.md#authentication-controls)).
+
 ---
 
 ## Environment variables
@@ -220,6 +262,9 @@ covers the essentials.
 | `REDIS_URL`, `REDIS_PASSWORD`      | Cache + Celery broker, password protected.                     |
 | `CELERY_BROKER_URL`, `CELERY_RESULT_BACKEND` | Celery transport (separate Redis DBs by default).    |
 | `ENABLE_API_DOCS`                  | Serve Swagger/ReDoc (disabled by default in production).       |
+| `DJANGO_COOKIE_SAMESITE`           | `Lax` (default; production pins it) or `None` for embedded clients. |
+| `DJANGO_COOKIE_SECURE`             | Forces the `Secure` cookie flag; implied by `SameSite=None`.   |
+| `AUTH_ENABLE_TOKEN_FALLBACK`       | Opt-in `Authorization: Bearer` session tokens (off by default). |
 | `VITE_API_BASE_URL`                | Public API base path (`/api/v1`, relative).                    |
 
 Frontend variables (`VITE_*`) are **public** – they are compiled into the

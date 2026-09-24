@@ -18,12 +18,17 @@ export const authApi = {
   // --- authentication ---------------------------------------------------
   session: (signal?: AbortSignal) =>
     api.get<SessionPayload>('/identity/auth/session/', { signal }),
+  // ``token_auth`` asks the server for the bearer fallback as well as the
+  // cookie. Harmless when the server does not offer it (the field is null) and
+  // the difference between "works in the preview" and "stuck on sign-in" when
+  // the browser refuses third-party cookies.
   login: (email: string, password: string) =>
-    api.post<LoginResponse>('/identity/auth/login/', { email, password }),
+    api.post<LoginResponse>('/identity/auth/login/', { email, password, token_auth: true }),
   verifyMfa: (challengeToken: string, code: string) =>
     api.post<LoginResponse>('/identity/auth/mfa/verify/', {
       challenge_token: challengeToken,
       code,
+      token_auth: true,
     }),
   logout: () => api.post<void>('/identity/auth/logout/'),
 

@@ -34,6 +34,13 @@ REST_FRAMEWORK = {
     },
 }
 
+# Authentication switches are pinned so the suite never depends on the
+# developer's ``.env`` (the sandbox enables the bearer fallback there). Tests
+# that cover the enabled behaviour use ``override_settings``.
+AUTH_ENABLE_TOKEN_FALLBACK = False
+AUTH_REQUIRE_EMAIL_VERIFICATION = False
+AUTH_REQUIRE_MFA_FOR_ADMINS = True
+
 LOGGING["root"]["level"] = "WARNING"
 for _logger in LOGGING["loggers"].values():
     _logger["level"] = "WARNING"

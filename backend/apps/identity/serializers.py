@@ -290,6 +290,9 @@ class DeactivateUserSerializer(serializers.Serializer):
 class LoginSerializer(serializers.Serializer):
     email = CaseInsensitiveEmailField()
     password = serializers.CharField(write_only=True, style={"input_type": "password"})
+    # Clients that cannot rely on cookies (cross-site embeds) ask for the bearer
+    # fallback; it is only honoured when the server enables it.
+    token_auth = serializers.BooleanField(required=False, default=False)
 
 
 class LoginResponseSerializer(serializers.Serializer):
@@ -302,6 +305,8 @@ class LoginResponseSerializer(serializers.Serializer):
 class MFAChallengeSerializer(serializers.Serializer):
     challenge_token = serializers.CharField()
     code = serializers.CharField(max_length=16)
+    # Mirrors LoginSerializer: ask for the bearer fallback on the MFA step too.
+    token_auth = serializers.BooleanField(required=False, default=False)
 
 
 class PasswordChangeSerializer(serializers.Serializer):

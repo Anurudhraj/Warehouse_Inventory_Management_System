@@ -54,6 +54,11 @@ export interface LoginResponse {
   /** Present on a completed sign-in; during the MFA step only email/first name. */
   user: Partial<SessionUser>;
   permissions?: string[];
+  /**
+   * Opaque session credential, returned only when the server enables the bearer
+   * fallback (embedded/cross-site deployments where cookies are not usable).
+   */
+  session_token?: string | null;
 }
 
 export interface UserSummary {

@@ -15,6 +15,7 @@ import {
   type ReactNode,
 } from 'react';
 
+import { setSessionToken } from '@/lib/api/client';
 import { isApiError } from '@/lib/api/errors';
 
 import { authApi } from './api';
@@ -29,8 +30,11 @@ interface AuthContextValue {
   organizations: number[];
   warehouses: number[];
   isPlatformAdmin: boolean;
-  refresh: () => Promise<void>;
+  /** Re-reads the session; resolves to whether an authenticated session exists. */
+  refresh: () => Promise<boolean>;
   signIn: (email: string, password: string) => Promise<LoginResponse>;
+  /** Set when credentials were accepted but the browser dropped the session. */
+  sessionBlocked: boolean;
   completeMfa: (challengeToken: string, code: string) => Promise<void>;
   signOut: () => Promise<void>;
   setUser: (user: SessionUser) => void;
@@ -43,22 +47,22 @@ const AuthContext = createContext<AuthContextValue | null>(null);
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [status, setStatus] = useState<AuthStatus>('loading');
   const [session, setSession] = useState<SessionPayload | null>(null);
+  const [sessionBlocked, setSessionBlocked] = useState(false);
 
   const refresh = useCallback(async () => {
     try {
       const payload = await authApi.session();
       setSession(payload);
       setStatus('authenticated');
+      setSessionBlocked(false);
+      return true;
     } catch (error) {
       // 401 is the normal "not signed in" answer; anything else means the API
       // is unreachable, which the health indicator already reports.
-      if (isApiError(error) && error.status === 401) {
-        setSession(null);
-        setStatus('anonymous');
-        return;
-      }
       setSession(null);
       setStatus('anonymous');
+      if (isApiError(error)) return false;
+      return false;
     }
   }, []);
 
@@ -66,16 +70,29 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     void refresh();
   }, [refresh]);
 
-  const signIn = useCallback(async (email: string, password: string) => {
-    const response = await authApi.login(email, password);
-    if (!response.mfa_required) await refresh();
-    return response;
-  }, [refresh]);
+  const signIn = useCallback(
+    async (email: string, password: string) => {
+      const response = await authApi.login(email, password);
+      // Prefer the cookie; use the opaque session token only when the server
+      // offered one (embedded deployments where cookies are unusable).
+      setSessionToken(response.session_token);
+      if (!response.mfa_required) {
+        const established = await refresh();
+        // Credentials were accepted but the session did not stick: the browser
+        // is refusing the session cookie and no token fallback is available.
+        setSessionBlocked(!established);
+      }
+      return response;
+    },
+    [refresh],
+  );
 
   const completeMfa = useCallback(
     async (challengeToken: string, code: string) => {
-      await authApi.verifyMfa(challengeToken, code);
-      await refresh();
+      const response = await authApi.verifyMfa(challengeToken, code);
+      setSessionToken(response.session_token);
+      const established = await refresh();
+      setSessionBlocked(!established);
     },
     [refresh],
   );
@@ -84,8 +101,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     try {
       await authApi.logout();
     } finally {
+      setSessionToken(null);
       setSession(null);
       setStatus('anonymous');
+      setSessionBlocked(false);
     }
   }, []);
 
@@ -97,6 +116,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const permissions = session?.permissions ?? [];
     return {
       status,
+      sessionBlocked,
       user: session?.user ?? null,
       permissions,
       organizations: session?.organizations ?? [],
@@ -110,7 +130,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       hasPermission: (code: string) => permissions.includes(code),
       hasAnyPermission: (codes: string[]) => codes.some((code) => permissions.includes(code)),
     };
-  }, [completeMfa, refresh, session, setUser, signIn, signOut, status]);
+  }, [completeMfa, refresh, session, sessionBlocked, setUser, signIn, signOut, status]);
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }

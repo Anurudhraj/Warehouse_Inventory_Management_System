@@ -14,7 +14,7 @@ interface LocationState {
 }
 
 export function LoginPage() {
-  const { status, signIn, completeMfa } = useAuth();
+  const { status, signIn, completeMfa, sessionBlocked } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
   const redirectTo = (location.state as LocationState | null)?.from ?? '/';
@@ -76,6 +76,15 @@ export function LoginPage() {
               {error ? (
                 <Alert variant="danger" title="Sign-in failed">
                   {error}
+                </Alert>
+              ) : null}
+
+              {sessionBlocked && !error ? (
+                <Alert variant="warning" title="Signed in, but the browser dropped the session">
+                  Your credentials were accepted, however this browser refused to keep the
+                  sign-in cookie — which happens when the app is embedded in another site.
+                  Open this page in its own browser tab, or ask an administrator to enable
+                  the API token fallback.
                 </Alert>
               ) : null}
 

@@ -134,6 +134,7 @@ export function Topbar({ onToggleSidebar }: TopbarProps) {
             className="hover:bg-muted flex items-center gap-2 rounded-md py-1.5 pe-2 ps-1.5 transition-colors"
             aria-haspopup="menu"
             aria-expanded={menuOpen}
+            aria-label={`Account menu for ${displayName}`}
           >
             <span className="bg-primary text-primary-foreground flex size-7 items-center justify-center rounded-full text-[11px] font-semibold">
               {initials(displayName)}

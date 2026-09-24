@@ -243,6 +243,8 @@ exceed the editor's own authority.
 | MFA / TOTP | Encrypted secrets (HKDF-SHA256 + Fernet), ±1 step window, replay-protected, 10 single-use recovery codes. Administrators are challenged once a device is confirmed. |
 | Email verification | Single-use, SHA-256-hashed tokens (raw value only in the email), 24 h TTL; enforcement is a policy switch (`AUTH_REQUIRE_EMAIL_VERIFICATION`). |
 | Password reset | Single-use token, 1 h TTL; the token is only consumed once the new password passes policy. |
+| Session credential | HttpOnly session cookie (`SESSION_COOKIE_HTTPONLY`), optional `Secure`/`SameSite` (below). The **CSRF cookie stays script-readable** (`CSRF_COOKIE_HTTPONLY = False`) because the SPA must echo the token in `X-CSRFToken`; the CSRF token is not a credential and Django's own documentation recommends this for JavaScript clients. |
+| Unauthenticated vs forbidden | `401` = who are you; `403` = I know who you are, you may not; `404` for out-of-scope resources. Both authenticators publish a `WWW-Authenticate` challenge so DRF cannot downgrade a 401 into a 403. |
 
 Relevant settings (all environment-driven, see `config/settings/base.py`):
 `AUTH_MAX_FAILED_ATTEMPTS`, `AUTH_LOCKOUT_SECONDS`, `AUTH_LOGIN_THROTTLE_RATE`,
@@ -250,7 +252,43 @@ Relevant settings (all environment-driven, see `config/settings/base.py`):
 `AUTH_MFA_THROTTLE_RATE`, `AUTH_MFA_VALID_WINDOW`, `AUTH_MFA_RECOVERY_CODE_COUNT`,
 `AUTH_PASSWORD_RESET_TTL`, `AUTH_EMAIL_VERIFICATION_TTL`,
 `AUTH_REQUIRE_EMAIL_VERIFICATION`, `AUTH_REQUIRE_MFA_FOR_ADMINS`,
-`SESSION_COOKIE_AGE`, `SESSION_IDLE_TIMEOUT`.
+`AUTH_ENABLE_TOKEN_FALLBACK`, `SESSION_COOKIE_AGE`, `SESSION_IDLE_TIMEOUT`,
+`DJANGO_COOKIE_SAMESITE`, `DJANGO_COOKIE_SECURE`.
+
+### Cookie transport and the bearer fallback
+
+Two deployments need different cookie shapes, so the attributes are configurable
+instead of hard-coded:
+
+| Setting | Same-origin deployment (production) | Embedded client (browser preview) |
+| ------- | ----------------------------------- | --------------------------------- |
+| `SESSION_COOKIE_SAMESITE` / `CSRF_COOKIE_SAMESITE` | `Lax` — pinned in `production.py` | `None` — the browser only sends cookies on cross-site XHR when the value is `None` |
+| `SESSION_COOKIE_SECURE` / `CSRF_COOKIE_SECURE` | `true` (pinned) | `true` — `SameSite=None` without `Secure` is rejected by browsers, so `config/settings/base.py` promotes it automatically |
+| `SESSION_COOKIE_NAME` / `CSRF_COOKIE_NAME` | `__Host-…` (pinned) | default names (the `__Host-` prefix requires `Secure`, `Path=/` and no `Domain`) |
+| `AUTH_ENABLE_TOKEN_FALLBACK` | `false` (pinned) | `true` |
+
+Why a fallback exists at all: a `SameSite=Lax` cookie is **never** sent on
+cross-site `fetch`/XHR calls, and browsers with third-party cookies blocked drop
+the cookie entirely. In an embedded preview that looks like "the password is
+accepted, then the next request is anonymous again and the sign-in page comes
+back". When `AUTH_ENABLE_TOKEN_FALLBACK` is on:
+
+* `POST auth/login/` and `POST auth/mfa/verify/` accept `"token_auth": true` and
+  add `session_token` to the response (the field is omitted otherwise);
+* `apps.identity.authentication.SessionTokenAuthentication` accepts
+  `Authorization: Bearer <session_token>`;
+* the token **is** the tracked session key — the same `UserSession` row that the
+  cookie points at, so revocation, idle expiry, deactivation and the audit trail
+  behave identically on both paths;
+* the cookie is still tried first and still wins when the browser sends it, and
+  bearer-authenticated requests are not subject to the cookie CSRF check (a
+  header credential is not attachable by a third-party site);
+* the SPA keeps it in `sessionStorage` (per tab, gone when the tab closes) and
+  drops it on sign-out or on the first `401`.
+
+Authorisation is unaffected: the token only identifies the caller. Effective
+permissions, scopes and escalation guards are recomputed server-side on every
+request regardless of how the caller authenticated.
 
 ---
 
@@ -258,7 +296,7 @@ Relevant settings (all environment-driven, see `config/settings/base.py`):
 
 | Area | Endpoints |
 | ---- | --------- |
-| Authentication | `POST auth/login/`, `POST auth/mfa/verify/`, `POST auth/logout/`, `GET auth/session/`, `POST auth/password/change/`, `POST auth/password/reset/`, `POST auth/password/reset/confirm/`, `POST auth/password/reset/validate/`, `POST auth/email/verify/`, `POST auth/email/resend/` |
+| Authentication | `POST auth/login/`, `POST auth/mfa/verify/` (both accept `"token_auth": true`), `POST auth/logout/`, `GET auth/session/`, `POST auth/password/change/`, `POST auth/password/reset/`, `POST auth/password/reset/confirm/`, `POST auth/password/reset/validate/`, `POST auth/email/verify/`, `POST auth/email/resend/` |
 | Self-service | `GET/PATCH profile/`, `GET sessions/`, `POST sessions/<id>/revoke/`, `POST sessions/revoke-all/`, `GET/POST mfa/`, `mfa/enrol/`, `mfa/confirm/`, `mfa/disable/`, `mfa/recovery-codes/` |
 | User administration | `GET/POST users/`, `GET/PATCH users/<id>/`, `POST users/<id>/{activate,deactivate,set-password,resend-verification,revoke-sessions}/`, `GET users/<id>/sessions/` |
 | Audit | `GET login-attempts/` — own attempts; with `audit.view` in scope, every account in the caller's organizations |
