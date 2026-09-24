@@ -1,0 +1,286 @@
+# ---------------------------------------------------------------------------
+# Warehouse & Inventory Management System — production-like stack
+# ---------------------------------------------------------------------------
+#   nginx (edge)  ->  frontend (static SPA)  +  api (gunicorn/Django)
+#                                        api -> db (PostgreSQL), redis
+#                                        worker / beat (Celery)
+#
+# Security posture:
+#   * PostgreSQL and Redis are attached to an *internal* network only —
+#     they have no published ports and no route from the host/Internet.
+#   * Only the edge nginx publishes ports (80/443 by default).
+#   * Secrets come from .env (never baked into images or committed).
+#   * The API runs with DJANGO_DEBUG=false and the production settings module.
+#
+# Usage:
+#   cp .env.example .env   # then edit the secrets
+#   docker compose up -d --build
+#   docker compose logs -f api
+#
+# For a developer workflow (Django runserver + Vite HMR with published ports)
+# use:  docker compose -f docker-compose.yml -f docker-compose.dev.yml up
+# ---------------------------------------------------------------------------
+name: wims
+
+x-api-base: &api-base
+  build:
+    context: ./backend
+    dockerfile: Dockerfile
+  image: wims/backend:latest
+  restart: unless-stopped
+  env_file:
+    - .env
+  environment:
+    DJANGO_SETTINGS_MODULE: ${DJANGO_SETTINGS_MODULE:-config.settings.production}
+    DJANGO_ENV: production
+    POSTGRES_HOST: db
+    POSTGRES_PORT: "5432"
+    REDIS_URL: redis://:${REDIS_PASSWORD:?REDIS_PASSWORD must be set in .env}@redis:6379/0
+    CELERY_BROKER_URL: redis://:${REDIS_PASSWORD}@redis:6379/1
+    CELERY_RESULT_BACKEND: redis://:${REDIS_PASSWORD}@redis:6379/2
+    REDIS_HOST: redis
+    REDIS_PORT: "6379"
+  depends_on:
+    db:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
+  networks:
+    - backend-net
+
+services:
+  # -------------------------------------------------------------------------
+  # PostgreSQL — internal network only, persistent volume, no host ports
+  # -------------------------------------------------------------------------
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:?POSTGRES_DB must be set in .env}
+      POSTGRES_USER: ${POSTGRES_USER:?POSTGRES_USER must be set in .env}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}
+      PGDATA: /var/lib/postgresql/data/pgdata
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    expose:
+      - "5432" # reachable inside backend-net only — never published to the host
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 20s
+    networks:
+      - backend-net
+
+  # -------------------------------------------------------------------------
+  # Redis — cache + Celery broker/result backend, password protected
+  # -------------------------------------------------------------------------
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command:
+      [
+        "redis-server",
+        "--requirepass",
+        "${REDIS_PASSWORD:?REDIS_PASSWORD must be set in .env}",
+        "--appendonly",
+        "yes",
+        "--maxmemory",
+        "${REDIS_MAXMEMORY:-512mb}",
+        "--maxmemory-policy",
+        "noeviction",
+      ]
+    volumes:
+      - redis_data:/data
+    expose:
+      - "6379" # internal network only — never published to the host
+    healthcheck:
+      test:
+        ["CMD-SHELL", "redis-cli -a \"$$REDIS_PASSWORD\" ping | grep -q PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+    networks:
+      - backend-net
+
+  # -------------------------------------------------------------------------
+  # API — gunicorn (WSGI), migrations + collectstatic run on start
+  # -------------------------------------------------------------------------
+  api:
+    <<: *api-base
+    environment:
+      DJANGO_SETTINGS_MODULE: ${DJANGO_SETTINGS_MODULE:-config.settings.production}
+      DJANGO_ENV: production
+      POSTGRES_HOST: db
+      POSTGRES_PORT: "5432"
+      REDIS_URL: redis://:${REDIS_PASSWORD:?REDIS_PASSWORD must be set in .env}@redis:6379/0
+      CELERY_BROKER_URL: redis://:${REDIS_PASSWORD}@redis:6379/1
+      CELERY_RESULT_BACKEND: redis://:${REDIS_PASSWORD}@redis:6379/2
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      GUNICORN_WORKERS: ${GUNICORN_WORKERS:-3}
+    command:
+      - gunicorn
+      - config.wsgi:application
+      - --bind
+      - 0.0.0.0:8000
+      - --workers
+      - ${GUNICORN_WORKERS:-3}
+      - --timeout
+      - "60"
+      - --access-logfile
+      - "-"
+      - --error-logfile
+      - "-"
+    volumes:
+      # Shared with the edge nginx for Django admin static assets.
+      - static_files:/app/staticfiles
+    expose:
+      - "8000"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/api/v1/health/live/', timeout=5).status == 200 else 1)",
+        ]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 40s
+    networks:
+      - backend-net
+      - edge-net
+
+  # -------------------------------------------------------------------------
+  # Celery worker — background jobs for every domain module
+  # -------------------------------------------------------------------------
+  worker:
+    <<: *api-base
+    environment:
+      DJANGO_SETTINGS_MODULE: ${DJANGO_SETTINGS_MODULE:-config.settings.production}
+      DJANGO_ENV: production
+      POSTGRES_HOST: db
+      POSTGRES_PORT: "5432"
+      REDIS_URL: redis://:${REDIS_PASSWORD:?REDIS_PASSWORD must be set in .env}@redis:6379/0
+      CELERY_BROKER_URL: redis://:${REDIS_PASSWORD}@redis:6379/1
+      CELERY_RESULT_BACKEND: redis://:${REDIS_PASSWORD}@redis:6379/2
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+    command:
+      - celery
+      - -A
+      - config
+      - worker
+      - --loglevel=INFO
+      - --concurrency=${CELERY_CONCURRENCY:-2}
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      api:
+        condition: service_started
+    networks:
+      - backend-net
+
+  # -------------------------------------------------------------------------
+  # Celery beat — periodic/scheduled jobs
+  # -------------------------------------------------------------------------
+  beat:
+    <<: *api-base
+    environment:
+      DJANGO_SETTINGS_MODULE: ${DJANGO_SETTINGS_MODULE:-config.settings.production}
+      DJANGO_ENV: production
+      POSTGRES_HOST: db
+      POSTGRES_PORT: "5432"
+      REDIS_URL: redis://:${REDIS_PASSWORD:?REDIS_PASSWORD must be set in .env}@redis:6379/0
+      CELERY_BROKER_URL: redis://:${REDIS_PASSWORD}@redis:6379/1
+      CELERY_RESULT_BACKEND: redis://:${REDIS_PASSWORD}@redis:6379/2
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+    command:
+      - celery
+      - -A
+      - config
+      - beat
+      - --loglevel=INFO
+      - --schedule=/app/celerybeat-schedule
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - backend-net
+
+  # -------------------------------------------------------------------------
+  # Frontend — nginx serving the compiled SPA
+  # -------------------------------------------------------------------------
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        VITE_API_BASE_URL: ${VITE_API_BASE_URL:-/api/v1}
+        VITE_APP_ENV: ${VITE_APP_ENV:-production}
+        VITE_APP_NAME: ${VITE_APP_NAME:-WIMS}
+        VITE_HEALTH_POLL_MS: ${VITE_HEALTH_POLL_MS:-30000}
+    image: wims/frontend:latest
+    restart: unless-stopped
+    expose:
+      - "80"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1/healthz || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - edge-net
+
+  # -------------------------------------------------------------------------
+  # Edge nginx — the only service publishing ports to the host
+  # -------------------------------------------------------------------------
+  nginx:
+    image: nginx:1.27-alpine
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_started
+      frontend:
+        condition: service_started
+    ports:
+      - "${HTTP_PORT:-80}:80"
+      - "${HTTPS_PORT:-443}:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/conf.d:/etc/nginx/conf.d:ro
+      - static_files:/var/www/static:ro
+      - ./nginx/certs:/etc/nginx/certs:ro
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1/nginx-healthz || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - edge-net
+      - backend-net
+
+volumes:
+  postgres_data:
+  redis_data:
+  static_files:
+
+networks:
+  # No host/Internet route: database, cache and workers live here.
+  backend-net:
+    driver: bridge
+    internal: true
+  # Only the edge proxy + SPA are reachable from outside.
+  edge-net:
+    driver: bridge
