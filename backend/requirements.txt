@@ -1,0 +1,12 @@
+# Warehouse & Inventory Management System — backend dependencies
+# Python 3.12 (see backend/Dockerfile)
+
+Django>=5.2,<6.0
+djangorestframework>=3.16,<4.0
+drf-spectacular[sidecar]>=0.28,<0.29
+django-cors-headers>=4.7,<5.0
+django-redis>=5.4,<7.0
+redis>=5.0,<7.0
+celery>=5.5,<6.0
+psycopg[binary]>=3.2,<4.0
+gunicorn>=23.0,<24.0

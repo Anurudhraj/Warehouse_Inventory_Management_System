@@ -1,0 +1,88 @@
+# ---------------------------------------------------------------------------
+# Developer override — Django runserver + Vite dev server with hot reload.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up
+#
+# What changes vs. the production stack:
+#   * API runs `manage.py runserver` with development settings and the source
+#     tree bind-mounted (code changes reload instantly).
+#   * The compiled SPA is replaced by the Vite dev server (HMR) on :5173.
+#   * API (:8000) and Vite (:5173) are published to the host for convenience.
+#     PostgreSQL and Redis stay on the internal network — never published.
+# ---------------------------------------------------------------------------
+services:
+  api:
+    environment:
+      DJANGO_SETTINGS_MODULE: config.settings.development
+      DJANGO_ENV: development
+      DJANGO_DEBUG: "true"
+      DJANGO_SECRET_KEY: ${DJANGO_DEV_SECRET_KEY:-dev-only-insecure-secret-key}
+      DJANGO_ALLOWED_HOSTS: ${DJANGO_DEV_ALLOWED_HOSTS:-localhost,127.0.0.1,0.0.0.0,[::1],.localhost,api}
+      DJANGO_CSRF_TRUSTED_ORIGINS: ${DJANGO_DEV_CSRF_TRUSTED_ORIGINS:-http://localhost:5173,http://127.0.0.1:5173}
+      CORS_ALLOWED_ORIGINS: ${DJANGO_DEV_CORS_ORIGINS:-http://localhost:5173,http://127.0.0.1:5173}
+      POSTGRES_HOST: db
+      POSTGRES_PORT: "5432"
+      REDIS_URL: redis://:${REDIS_PASSWORD:?REDIS_PASSWORD must be set in .env}@redis:6379/0
+      CELERY_BROKER_URL: redis://:${REDIS_PASSWORD}@redis:6379/1
+      CELERY_RESULT_BACKEND: redis://:${REDIS_PASSWORD}@redis:6379/2
+    command: python manage.py runserver 0.0.0.0:8000
+    volumes:
+      - ./backend:/app
+      - static_files:/app/staticfiles
+    ports:
+      # Local development only — remove when running the production stack.
+      - "${DEV_API_PORT:-8000}:8000"
+
+  worker:
+    environment:
+      DJANGO_SETTINGS_MODULE: config.settings.development
+      DJANGO_ENV: development
+      DJANGO_DEBUG: "true"
+      DJANGO_SECRET_KEY: ${DJANGO_DEV_SECRET_KEY:-dev-only-insecure-secret-key}
+      POSTGRES_HOST: db
+      POSTGRES_PORT: "5432"
+      REDIS_URL: redis://:${REDIS_PASSWORD:?REDIS_PASSWORD must be set in .env}@redis:6379/0
+      CELERY_BROKER_URL: redis://:${REDIS_PASSWORD}@redis:6379/1
+      CELERY_RESULT_BACKEND: redis://:${REDIS_PASSWORD}@redis:6379/2
+    volumes:
+      - ./backend:/app
+
+  beat:
+    environment:
+      DJANGO_SETTINGS_MODULE: config.settings.development
+      DJANGO_ENV: development
+      DJANGO_DEBUG: "true"
+      DJANGO_SECRET_KEY: ${DJANGO_DEV_SECRET_KEY:-dev-only-insecure-secret-key}
+      POSTGRES_HOST: db
+      POSTGRES_PORT: "5432"
+      REDIS_URL: redis://:${REDIS_PASSWORD:?REDIS_PASSWORD must be set in .env}@redis:6379/0
+      CELERY_BROKER_URL: redis://:${REDIS_PASSWORD}@redis:6379/1
+      CELERY_RESULT_BACKEND: redis://:${REDIS_PASSWORD}@redis:6379/2
+    volumes:
+      - ./backend:/app
+
+  # Vite dev server (hot module replacement) replacing the built SPA.
+  vite:
+    image: node:22-alpine
+    working_dir: /app
+    command: sh -c "npm ci || npm install && npm run dev -- --host 0.0.0.0"
+    environment:
+      VITE_DEV_API_TARGET: http://api:8000
+      VITE_PORT: "5173"
+    volumes:
+      - ./frontend:/app
+      - vite_node_modules:/app/node_modules
+    ports:
+      - "${DEV_WEB_PORT:-5173}:5173"
+    depends_on:
+      api:
+        condition: service_started
+    networks:
+      - edge-net
+
+  # The compiled SPA is not needed while Vite serves the app.
+  frontend:
+    profiles: ["built-frontend"]
+
+volumes:
+  vite_node_modules:

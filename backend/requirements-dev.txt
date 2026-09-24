@@ -1,0 +1,7 @@
+# Development/test-only extras (never installed in production images).
+# pgserver / redislite provide embedded PostgreSQL / Redis servers so the
+# full stack can be exercised on machines without Docker.
+-r requirements.txt
+
+pgserver>=0.1.4
+redislite>=6.2
