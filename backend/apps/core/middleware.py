@@ -18,7 +18,16 @@ REQUEST_ID_HEADER = "X-Request-ID"
 access_logger = logging.getLogger("access")
 app_logger = logging.getLogger("apps.core")
 
-_SENSITIVE_PATH_MARKERS = ("/api/v1/auth/login", "/api/v1/auth/logout", "/admin/login")
+# Paths whose query strings must never be written to logs (they carry
+# credentials, tokens or one-time codes).
+_SENSITIVE_PATH_MARKERS = (
+    "/auth/login",
+    "/auth/logout",
+    "/auth/mfa",
+    "/auth/password",
+    "/auth/email",
+    "/admin/login",
+)
 
 
 def get_current_request_id() -> str | None:

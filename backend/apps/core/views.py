@@ -7,6 +7,7 @@ import time
 
 from django import __version__ as django_version
 from django.conf import settings
+from django.core.cache import cache
 from django.db import connection
 from drf_spectacular.utils import extend_schema, inline_serializer
 from rest_framework import serializers, status
@@ -39,18 +40,34 @@ def _check_database() -> tuple[bool, str]:
 
 
 def _check_redis() -> tuple[bool, str]:
-    try:
-        from django_redis import get_redis_connection
+    """Probe the cache/broker dependency.
 
-        start = time.perf_counter()
-        redis = get_redis_connection("default")
-        if not redis.ping():
+    Production runs Redis, so that is what gets pinged. When a deployment is
+    configured with a different cache backend (local memory in tests, for
+    example) the configured backend is exercised instead — reporting 503 for a
+    service the deployment does not use would be misleading.
+    """
+    start = time.perf_counter()
+    if "django_redis" in settings.CACHES["default"]["BACKEND"]:
+        try:
+            from django_redis import get_redis_connection
+
+            redis = get_redis_connection("default")
+            if not redis.ping():
+                return False, "unavailable"
+        except Exception as exc:
+            logger.error("Redis health check failed: %s", exc)
             return False, "unavailable"
-        latency_ms = (time.perf_counter() - start) * 1000.0
-        return True, f"{latency_ms:.1f}ms"
+        return True, f"{(time.perf_counter() - start) * 1000.0:.1f}ms"
+
+    try:
+        cache.set("wims:health-probe", "ok", 5)
+        if cache.get("wims:health-probe") != "ok":
+            return False, "unavailable"
     except Exception as exc:
-        logger.error("Redis health check failed: %s", exc)
+        logger.error("Cache health check failed: %s", exc)
         return False, "unavailable"
+    return True, f"{(time.perf_counter() - start) * 1000.0:.1f}ms (local cache)"
 
 
 class ApiIndexView(BaseHealthView):

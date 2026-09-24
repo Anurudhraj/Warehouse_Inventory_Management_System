@@ -91,6 +91,9 @@ MIDDLEWARE = [
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
     "django.contrib.auth.middleware.AuthenticationMiddleware",
+    # Rejects requests whose tracked session was revoked (logout-all, admin
+    # revocation, password reset). Runs after auth so request.user is known.
+    "apps.identity.middleware.SessionRevocationMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
     "apps.core.middleware.AccessLogMiddleware",
@@ -167,9 +170,25 @@ CELERY_BROKER_CONNECTION_RETRY_ON_STARTUP = True
 # ---------------------------------------------------------------------------
 # Auth & sessions
 # ---------------------------------------------------------------------------
+AUTH_USER_MODEL = "identity.User"
+
+AUTHENTICATION_BACKENDS = ["django.contrib.auth.backends.ModelBackend"]
+
+# Argon2id is the preferred password hash; Django's PBKDF2 stays as fallback
+# for existing hashes and remains available for rotation.
+PASSWORD_HASHERS = [
+    "django.contrib.auth.hashers.Argon2PasswordHasher",
+    "django.contrib.auth.hashers.PBKDF2PasswordHasher",
+    "django.contrib.auth.hashers.PBKDF2SHA1PasswordHasher",
+    "django.contrib.auth.hashers.ScryptPasswordHasher",
+]
+
 AUTH_PASSWORD_VALIDATORS = [
     {"NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator"},
-    {"NAME": "django.contrib.auth.password_validation.MinimumLengthValidator"},
+    {
+        "NAME": "django.contrib.auth.password_validation.MinimumLengthValidator",
+        "OPTIONS": {"min_length": 12},
+    },
     {"NAME": "django.contrib.auth.password_validation.CommonPasswordValidator"},
     {"NAME": "django.contrib.auth.password_validation.NumericPasswordValidator"},
 ]
@@ -178,13 +197,66 @@ SESSION_COOKIE_HTTPONLY = True
 SESSION_COOKIE_SAMESITE = "Lax"
 CSRF_COOKIE_HTTPONLY = True
 CSRF_COOKIE_SAMESITE = "Lax"
+SESSION_ENGINE = "django.contrib.sessions.backends.db"
+SESSION_COOKIE_AGE = env.env_int("SESSION_COOKIE_AGE", default=8 * 60 * 60)  # 8 hours
+SESSION_SAVE_EVERY_REQUEST = False
+SESSION_EXPIRE_AT_BROWSER_CLOSE = False
+
+# ---------------------------------------------------------------------------
+# Authentication hardening (identity + security modules)
+# ---------------------------------------------------------------------------
+# Account lockout after repeated failures (per account) …
+AUTH_MAX_FAILED_ATTEMPTS = env.env_int("AUTH_MAX_FAILED_ATTEMPTS", default=5)
+AUTH_LOCKOUT_SECONDS = env.env_int("AUTH_LOCKOUT_SECONDS", default=15 * 60)
+# … and per-IP throttling at the API layer (DRF scoped throttles).
+AUTH_LOGIN_THROTTLE_RATE = env.env_str("AUTH_LOGIN_THROTTLE_RATE", default="10/min")
+AUTH_PASSWORD_RESET_THROTTLE_RATE = env.env_str(
+    "AUTH_PASSWORD_RESET_THROTTLE_RATE", default="5/hour"
+)
+AUTH_EMAIL_THROTTLE_RATE = env.env_str("AUTH_EMAIL_THROTTLE_RATE", default="5/hour")
+AUTH_MFA_THROTTLE_RATE = env.env_str("AUTH_MFA_THROTTLE_RATE", default="10/min")
+
+# Token lifetimes (seconds)
+AUTH_PASSWORD_RESET_TTL = env.env_int("AUTH_PASSWORD_RESET_TTL", default=60 * 60)
+AUTH_EMAIL_VERIFICATION_TTL = env.env_int("AUTH_EMAIL_VERIFICATION_TTL", default=24 * 60 * 60)
+AUTH_MFA_CHALLENGE_TTL = env.env_int("AUTH_MFA_CHALLENGE_TTL", default=5 * 60)
+
+# When true, unverified accounts cannot complete login.
+AUTH_REQUIRE_EMAIL_VERIFICATION = env.env_bool("AUTH_REQUIRE_EMAIL_VERIFICATION", default=False)
+# When true, platform administrators must have a confirmed MFA device to log in.
+AUTH_REQUIRE_MFA_FOR_ADMINS = env.env_bool("AUTH_REQUIRE_MFA_FOR_ADMINS", default=True)
+
+# TOTP parameters (RFC 6238) and MFA device limits
+AUTH_MFA_ISSUER = env.env_str("AUTH_MFA_ISSUER", default="WIMS")
+AUTH_MFA_VALID_WINDOW = env.env_int("AUTH_MFA_VALID_WINDOW", default=1)  # ±1 step (±30 s)
+AUTH_MFA_RECOVERY_CODE_COUNT = env.env_int("AUTH_MFA_RECOVERY_CODE_COUNT", default=10)
+
+# Tracked sessions: idle timeout used by the session management endpoints.
+SESSION_IDLE_TIMEOUT = env.env_int("SESSION_IDLE_TIMEOUT", default=8 * 60 * 60)
+
+# ---------------------------------------------------------------------------
+# Email (password reset, email verification, notifications)
+# ---------------------------------------------------------------------------
+EMAIL_BACKEND = env.env_str(
+    "EMAIL_BACKEND", default="django.core.mail.backends.console.EmailBackend"
+)
+EMAIL_HOST = env.env_str("EMAIL_HOST", default="")
+EMAIL_PORT = env.env_int("EMAIL_PORT", default=587)
+EMAIL_HOST_USER = env.env_str("EMAIL_HOST_USER", default="")
+EMAIL_HOST_PASSWORD = env.env_str("EMAIL_HOST_PASSWORD", default="")
+EMAIL_USE_TLS = env.env_bool("EMAIL_USE_TLS", default=True)
+EMAIL_TIMEOUT = env.env_int("EMAIL_TIMEOUT", default=10)
+DEFAULT_FROM_EMAIL = env.env_str("DEFAULT_FROM_EMAIL", default="no-reply@wims.local")
+SERVER_EMAIL = env.env_str("SERVER_EMAIL", default=DEFAULT_FROM_EMAIL)
+# Public base URL used to build links inside emails (reset/verify).
+FRONTEND_BASE_URL = env.env_str("FRONTEND_BASE_URL", default="http://localhost:5173")
 
 # ---------------------------------------------------------------------------
 # API — Django REST Framework, versioning & OpenAPI
 # ---------------------------------------------------------------------------
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": [
-        "rest_framework.authentication.SessionAuthentication",
+        "apps.identity.authentication.SessionAuthenticationWithChallenge",
     ],
     "DEFAULT_PERMISSION_CLASSES": [
         "rest_framework.permissions.AllowAny",  # tightened in Part 2 (identity module)
@@ -197,6 +269,12 @@ REST_FRAMEWORK = {
         "rest_framework.parsers.FormParser",
         "rest_framework.parsers.MultiPartParser",
     ],
+    "DEFAULT_FILTER_BACKENDS": [
+        # Every list endpoint declares ``search_fields``/``ordering_fields``;
+        # enabling the backends globally is what makes those declarations real.
+        "rest_framework.filters.SearchFilter",
+        "rest_framework.filters.OrderingFilter",
+    ],
     "DEFAULT_PAGINATION_CLASS": "rest_framework.pagination.PageNumberPagination",
     "PAGE_SIZE": 25,
     "DEFAULT_VERSIONING_CLASS": "rest_framework.versioning.NamespaceVersioning",
@@ -204,7 +282,15 @@ REST_FRAMEWORK = {
     "ALLOWED_VERSIONS": ("v1",),
     "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
     "EXCEPTION_HANDLER": "apps.core.exceptions.exception_handler",
-    "DEFAULT_THROTTLE_CLASSES": [],
+    "DEFAULT_THROTTLE_CLASSES": [
+        "rest_framework.throttling.ScopedRateThrottle",
+    ],
+    "DEFAULT_THROTTLE_RATES": {
+        "login": AUTH_LOGIN_THROTTLE_RATE,
+        "password_reset": AUTH_PASSWORD_RESET_THROTTLE_RATE,
+        "email": AUTH_EMAIL_THROTTLE_RATE,
+        "mfa": AUTH_MFA_THROTTLE_RATE,
+    },
 }
 
 SPECTACULAR_SETTINGS = {

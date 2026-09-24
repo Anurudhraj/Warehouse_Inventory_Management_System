@@ -19,6 +19,39 @@ function renderAt(path: string) {
   );
 }
 
+const sessionPayload = {
+  authenticated: true,
+  user: {
+    id: 1,
+    reference: 'USR-TEST',
+    email: 'admin@acme.test',
+    first_name: 'Ada',
+    last_name: 'Admin',
+    phone: '',
+    job_title: 'Warehouse Manager',
+    timezone: 'UTC',
+    locale: 'en',
+    organization: { id: 1, code: 'ACME', name: 'Acme Distribution' },
+    status: 'active',
+    is_email_verified: true,
+    mfa_required: false,
+    has_mfa_enabled: false,
+    must_change_password: false,
+    last_login_at: null,
+  },
+  permissions: [
+    'warehouse.view',
+    'user.view',
+    'user.manage',
+    'role.view',
+    'role.manage',
+    'assignment.manage',
+  ],
+  organizations: [1],
+  warehouses: [1],
+  is_platform_admin: false,
+};
+
 const healthPayload = {
   status: 'ok',
   environment: 'test',
@@ -35,6 +68,12 @@ beforeEach(() => {
     'fetch',
     vi.fn(async (input: RequestInfo | URL) => {
       const url = typeof input === 'string' ? input : input.toString();
+      if (url.includes('/identity/auth/session/')) {
+        return new Response(JSON.stringify(sessionPayload), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
       if (url.includes('/health')) {
         return new Response(JSON.stringify(healthPayload), {
           status: 200,

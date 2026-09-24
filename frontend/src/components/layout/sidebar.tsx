@@ -1,8 +1,11 @@
 import { NavLink } from 'react-router-dom';
+import { IdCard, KeySquare, ShieldCheck, Users } from 'lucide-react';
 
 import { HealthIndicator } from '@/components/layout/health-indicator';
 import { dashboardNavItem, MODULE_GROUPS, modulesInGroup } from '@/config/modules';
 import { env } from '@/config/env';
+import { usePermissions } from '@/features/auth/auth-context';
+import { PERMISSIONS } from '@/features/auth/types';
 import { cn } from '@/lib/utils/cn';
 
 interface SidebarProps {
@@ -24,6 +27,31 @@ function navLinkClass({ isActive }: { isActive: boolean }): string {
 
 export function Sidebar({ open, onNavigate }: SidebarProps) {
   const DashboardIcon = dashboardNavItem.icon;
+  const { hasPermission } = usePermissions();
+
+  // Administration entries appear only for users holding the matching
+  // permission — the API is what actually enforces them.
+  const administration = [
+    { path: '/profile', name: 'My profile', icon: IdCard, visible: true },
+    {
+      path: '/administration/users',
+      name: 'Users',
+      icon: Users,
+      visible: hasPermission(PERMISSIONS.users),
+    },
+    {
+      path: '/administration/roles',
+      name: 'Roles',
+      icon: ShieldCheck,
+      visible: hasPermission(PERMISSIONS.roles),
+    },
+    {
+      path: '/administration/permissions',
+      name: 'Permissions',
+      icon: KeySquare,
+      visible: hasPermission(PERMISSIONS.permissions),
+    },
+  ].filter((item) => item.visible);
 
   return (
     <aside
@@ -87,12 +115,32 @@ export function Sidebar({ open, onNavigate }: SidebarProps) {
             </div>
           );
         })}
+
+        <div className="space-y-1">
+          <p className="text-sidebar-muted px-2.5 pb-1 text-[10px] font-semibold tracking-widest uppercase">
+            Administration
+          </p>
+          {administration.map((item) => {
+            const Icon = item.icon;
+            return (
+              <NavLink
+                key={item.path}
+                to={item.path}
+                className={navLinkClass}
+                onClick={onNavigate}
+              >
+                <Icon className="size-4 shrink-0 opacity-80" aria-hidden="true" />
+                <span className="truncate">{item.name}</span>
+              </NavLink>
+            );
+          })}
+        </div>
       </nav>
 
       <div className="border-sidebar-border space-y-1 border-t px-3 py-3">
         <HealthIndicator />
         <p className="text-sidebar-muted px-2.5 pb-1 text-[10px]">
-          Part 1 · Foundation · {env.appEnv}
+          Part 2 · Identity & access · {env.appEnv}
         </p>
       </div>
     </aside>

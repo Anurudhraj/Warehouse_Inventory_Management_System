@@ -3,6 +3,7 @@ import { QueryCache, QueryClient, QueryClientProvider } from '@tanstack/react-qu
 
 import { isApiError } from '@/lib/api/errors';
 import { isDevelopment } from '@/config/env';
+import { AuthProvider } from '@/features/auth/auth-context';
 
 /**
  * Global data layer.
@@ -39,5 +40,11 @@ function createQueryClient(): QueryClient {
 export function AppProviders({ children }: { children: ReactNode }) {
   const [queryClient] = useState(createQueryClient);
 
-  return <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>;
+  return (
+    <QueryClientProvider client={queryClient}>
+      {/* Auth sits inside the query client: session state is fetched, and
+          signing out clears cached tenant data. */}
+      <AuthProvider>{children}</AuthProvider>
+    </QueryClientProvider>
+  );
 }

@@ -14,6 +14,15 @@ class LivenessTests(APITestCase):
         self.assertIn("X-Request-ID", response.headers)
 
 
+#: The suite runs on a local-memory cache; these tests exercise the Redis path.
+REDIS_CACHES = {
+    "default": {
+        "BACKEND": "django_redis.cache.RedisCache",
+        "LOCATION": "redis://127.0.0.1:6379/1",
+    }
+}
+
+
 class HealthTests(APITestCase):
     def _mock_redis_ok(self):
         redis = mock.Mock()
@@ -21,7 +30,7 @@ class HealthTests(APITestCase):
         return mock.patch("django_redis.get_redis_connection", return_value=redis)
 
     def test_health_ok_when_dependencies_healthy(self):
-        with self._mock_redis_ok():
+        with override_settings(CACHES=REDIS_CACHES), self._mock_redis_ok():
             response = self.client.get("/api/v1/health/")
         self.assertEqual(response.status_code, 200)
         body = response.json()
@@ -31,12 +40,20 @@ class HealthTests(APITestCase):
         self.assertEqual(body["version"], "v1")
 
     def test_health_degraded_when_redis_down(self):
-        with mock.patch("django_redis.get_redis_connection", side_effect=ConnectionError("boom")):
+        with override_settings(CACHES=REDIS_CACHES), mock.patch(
+            "django_redis.get_redis_connection", side_effect=ConnectionError("boom")
+        ):
             response = self.client.get("/api/v1/health/")
         self.assertEqual(response.status_code, 503)
         body = response.json()
         self.assertEqual(body["status"], "degraded")
         self.assertEqual(body["checks"]["redis"]["status"], "error")
+
+    def test_health_reports_the_configured_cache_backend(self):
+        """No Redis configured → the actual cache backend is probed (still ok)."""
+        response = self.client.get("/api/v1/health/")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["checks"]["redis"]["status"], "ok")
 
     def test_readiness_checks_database(self):
         response = self.client.get("/api/v1/health/ready/")

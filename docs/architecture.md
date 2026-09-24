@@ -4,6 +4,11 @@
 > fit together, why the boundaries are drawn where they are, and the rules every
 > later module must follow. Business modules are scaffolded only — their internal
 > design is documented when they are implemented.
+>
+> **Part 2 (identity, organizations and RBAC) is documented separately in
+> [rbac.md](rbac.md)**: permission catalog, role matrix, the authorization
+> engine's decision rules, the grant lifecycle and the authentication
+> controls.
 
 ---
 
@@ -18,7 +23,9 @@
 | Be operable | Health/readiness endpoints, structured logs with request ids, Docker health checks, and a UI operations console. |
 
 Non-goals for Part 1: business logic, authentication flows, real data models,
-reporting pipelines. Those are sequenced in the [roadmap](#13-roadmap).
+reporting pipelines. The identity/authorization layer landed in Part 2
+([rbac.md](rbac.md)); remaining business modules are sequenced in the
+[roadmap](#13-roadmap).
 
 ---
 

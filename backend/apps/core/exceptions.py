@@ -27,6 +27,11 @@ def _error_payload(code: str, message: str, detail=None) -> dict:
     return payload
 
 
+def _is_authenticated(request) -> bool:
+    user = getattr(request, "user", None)
+    return bool(user is not None and getattr(user, "is_authenticated", False))
+
+
 def exception_handler(exc, context):
     """DRF exception handler used by every API view."""
     request = context.get("request")
@@ -36,6 +41,11 @@ def exception_handler(exc, context):
         exc = exceptions.NotFound()
     elif isinstance(exc, PermissionDenied):
         exc = exceptions.PermissionDenied()
+
+    # Anonymous callers must get 401 (with a challenge) — never 403, which the
+    # frontend reads as "authenticated but not allowed".
+    if isinstance(exc, exceptions.PermissionDenied) and not _is_authenticated(request):
+        exc = exceptions.NotAuthenticated()
 
     if isinstance(exc, exceptions.APIException):
         set_rollback()

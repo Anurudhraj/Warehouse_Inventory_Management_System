@@ -6,11 +6,14 @@ replenishment, cycle counting, returns, barcode/RFID capture, reporting and
 governance — built as a modular monolith with a React/TypeScript client and a
 Django/DRF API.
 
-> **Status — Part 1 (Foundation) complete.**
+> **Status — Part 1 (Foundation) and Part 2 (Identity & organizations) complete.**
 > The platform architecture, API surface, design system, infrastructure and
-> operational tooling are in place. Business modules (identity, inventory,
-> orders, …) are **scaffolded only** — they are implemented in later parts of the
-> build plan. Nothing in Part 1 pretends to be finished functionality.
+> operational tooling are in place, together with the identity and authorization
+> foundation: email/password authentication, sessions, MFA (TOTP), password
+> reset, email verification, login-attempt auditing and an organization/warehouse
+> scoped RBAC engine — see **[docs/rbac.md](docs/rbac.md)**.
+> Business modules (inventory, orders, procurement, …) remain **scaffolded
+> only**; they are implemented in later parts of the build plan.
 
 ---
 
@@ -346,8 +349,10 @@ celery -A config beat -l info                      # run the scheduler
 
 Part 1 delivers the foundation. The module build order from here:
 
-1. **Part 2 — Identity & organizations:** users, RBAC, SSO-ready auth, tenants,
-   warehouses and locations (master data).
+1. ~~**Part 2 — Identity & organizations:** users, RBAC, SSO-ready auth, tenants,
+   warehouses and locations (master data).~~ **Delivered** — 56 permissions,
+   10 system roles, scoped enforcement on every endpoint, and automated
+   authorization suites (`docs/rbac.md`).
 2. **Part 3 — Catalog & inventory ledger:** products, pricing, inventory balances,
    movements, reservations.
 3. **Part 4 — Inbound:** suppliers, procurement, receiving, putaway.
@@ -359,6 +364,8 @@ Part 1 delivers the foundation. The module build order from here:
 
 ## Further documentation
 
+* **[docs/rbac.md](docs/rbac.md)** — the permission catalog, role matrix,
+  authorization semantics, grant lifecycle and authentication controls.
 * **[docs/architecture.md](docs/architecture.md)** — system architecture, module
   boundaries, request lifecycle, data flow, security architecture, deployment
   topologies, ADR-style decision log and the part-by-part roadmap.

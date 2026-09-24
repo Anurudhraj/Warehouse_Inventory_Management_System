@@ -1,11 +1,12 @@
 import { useState } from 'react';
-import { Link, useLocation } from 'react-router-dom';
-import { Bell, ChevronRight, LogOut, Menu, Moon, Search, Settings, Sun, User } from 'lucide-react';
+import { Link, useLocation, useNavigate } from 'react-router-dom';
+import { Bell, ChevronRight, LogOut, Menu, Moon, Search, Sun, User } from 'lucide-react';
 
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { MODULES_BY_KEY } from '@/config/modules';
+import { useAuth } from '@/features/auth/auth-context';
 import { useTheme } from '@/hooks/use-theme';
 import { initials } from '@/lib/utils/format';
 
@@ -26,6 +27,15 @@ function useBreadcrumbs() {
     crumbs.push({ label: second === 'health' ? 'Health' : (second ?? 'Overview'), to: pathname });
     return crumbs;
   }
+  if (first === 'administration') {
+    crumbs.push({ label: 'Administration', to: pathname });
+    crumbs.push({ label: second === 'permissions' ? 'Permissions' : second === 'roles' ? 'Roles' : 'Users', to: pathname });
+    return crumbs;
+  }
+  if (first === 'profile') {
+    crumbs.push({ label: 'My profile', to: pathname });
+    return crumbs;
+  }
 
   const module = MODULES_BY_KEY[first];
   crumbs.push({ label: module?.name ?? first, to: module?.path ?? pathname });
@@ -35,9 +45,24 @@ function useBreadcrumbs() {
 
 export function Topbar({ onToggleSidebar }: TopbarProps) {
   const { theme, toggleTheme } = useTheme();
+  const { user, signOut, isPlatformAdmin } = useAuth();
+  const navigate = useNavigate();
   const [search, setSearch] = useState('');
   const [menuOpen, setMenuOpen] = useState(false);
   const crumbs = useBreadcrumbs();
+
+  const displayName = user
+    ? user.full_name || `${user.first_name} ${user.last_name}`.trim()
+    : 'Signed out';
+  const roleLabel = isPlatformAdmin
+    ? 'Platform administrator'
+    : (user?.job_title || user?.organization?.name || 'Warehouse user');
+
+  async function handleSignOut() {
+    setMenuOpen(false);
+    await signOut();
+    navigate('/login', { replace: true });
+  }
 
   return (
     <header className="bg-card/85 border-border sticky top-0 z-30 flex h-14 items-center gap-3 border-b px-3 backdrop-blur-sm sm:px-5">
@@ -111,11 +136,11 @@ export function Topbar({ onToggleSidebar }: TopbarProps) {
             aria-expanded={menuOpen}
           >
             <span className="bg-primary text-primary-foreground flex size-7 items-center justify-center rounded-full text-[11px] font-semibold">
-              {initials('Demo Operator')}
+              {initials(displayName)}
             </span>
             <span className="hidden text-left leading-tight sm:block">
-              <span className="block text-xs font-medium">Demo Operator</span>
-              <span className="text-muted-foreground block text-[10px]">Warehouse Admin</span>
+              <span className="block text-xs font-medium">{displayName}</span>
+              <span className="text-muted-foreground block text-[10px]">{roleLabel}</span>
             </span>
           </button>
 
@@ -130,16 +155,32 @@ export function Topbar({ onToggleSidebar }: TopbarProps) {
                 role="menu"
                 className="bg-popover text-popover-foreground border-border animate-fade-in absolute end-0 z-50 mt-2 w-56 rounded-lg border p-1.5 shadow-overlay"
               >
-                <div className="border-border mb-1 flex items-center justify-between border-b px-2.5 pb-2 pt-1">
-                  <span className="text-xs font-medium">demo@wims.local</span>
-                  <Badge variant="primary">Admin</Badge>
+                <div className="border-border mb-1 flex items-center justify-between gap-2 border-b px-2.5 pb-2 pt-1">
+                  <span className="truncate text-xs font-medium">{user?.email}</span>
+                  {isPlatformAdmin ? (
+                    <Badge variant="primary">Admin</Badge>
+                  ) : (
+                    <Badge variant="outline">{user?.status ?? 'unknown'}</Badge>
+                  )}
                 </div>
-                <MenuItem icon={<User className="size-3.5" />} label="Profile" disabled />
-                <MenuItem icon={<Settings className="size-3.5" />} label="Preferences" disabled />
-                <MenuItem icon={<LogOut className="size-3.5" />} label="Sign out" disabled />
-                <p className="text-muted-foreground px-2.5 pt-2 pb-1 text-[10px]">
-                  Authentication arrives with the Identity module (Part 2).
-                </p>
+                <MenuItem
+                  icon={<User className="size-3.5" />}
+                  label="Profile"
+                  onClick={() => {
+                    setMenuOpen(false);
+                    navigate('/profile');
+                  }}
+                />
+                <MenuItem
+                  icon={<LogOut className="size-3.5" />}
+                  label="Sign out"
+                  onClick={() => void handleSignOut()}
+                />
+                {user?.must_change_password ? (
+                  <p className="text-warning-foreground px-2.5 pt-2 pb-1 text-[10px]">
+                    An administrator issued your current password — change it in Profile.
+                  </p>
+                ) : null}
               </div>
             </>
           ) : null}
@@ -149,12 +190,23 @@ export function Topbar({ onToggleSidebar }: TopbarProps) {
   );
 }
 
-function MenuItem({ icon, label, disabled }: { icon: React.ReactNode; label: string; disabled?: boolean }) {
+function MenuItem({
+  icon,
+  label,
+  disabled,
+  onClick,
+}: {
+  icon: React.ReactNode;
+  label: string;
+  disabled?: boolean;
+  onClick?: () => void;
+}) {
   return (
     <button
       type="button"
       role="menuitem"
       disabled={disabled}
+      onClick={onClick}
       className="hover:bg-muted flex w-full items-center gap-2.5 rounded-md px-2.5 py-2 text-[13px] transition-colors disabled:pointer-events-none disabled:opacity-50"
     >
       <span className="text-muted-foreground">{icon}</span>
